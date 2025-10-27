@@ -1,0 +1,82 @@
+name: Export All Project Items
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query GitHub Project data and export to CSV
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_ID: PVT_kwHOBbaxrc4BCV4I
+        run: |
+          # 1️⃣ GraphQL query (tất cả items + field)
+          QUERY=$(cat <<'EOF'
+          query($projectId: ID!) {
+            node(id: $projectId) {
+              ... on ProjectV2 {
+                title
+                items(first: 100) {
+                  nodes {
+                    id
+                    content {
+                      ... on Issue {
+                        title
+                        number
+                        url
+                      }
+                    }
+                    fieldValues(first: 20) {
+                      nodes {
+                        field {
+                          ... on ProjectV2FieldCommon { name }
+                        }
+                        ... on ProjectV2ItemFieldTextValue { text }
+                        ... on ProjectV2ItemFieldNumberValue { number }
+                        ... on ProjectV2ItemFieldSingleSelectValue { name }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          EOF
+          )
+
+          # 2️⃣ Gửi request
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -nc --arg q "$QUERY" --arg projectId "$PROJECT_ID" '{query: $q, variables: {projectId: $projectId}}')" \
+            https://api.github.com/graphql)
+
+          # 3️⃣ Parse & export CSV
+          echo "ItemID,IssueTitle,IssueNumber,Field,Value" > data.csv
+
+          echo "$RESPONSE" | jq -r '
+            .data.node.items.nodes[] as $item |
+            ($item.fieldValues.nodes[]? | 
+              .field.name as $fname |
+              if has("text") then [$item.id, $item.content.title, ($item.content.number|tostring), $fname, .text]
+              elif has("number") then [$item.id, $item.content.title, ($item.content.number|tostring), $fname, (.number|tostring)]
+              elif has("name") then [$item.id, $item.content.title, ($item.content.number|tostring), $fname, .name]
+              else [$item.id, $item.content.title, ($item.content.number|tostring), $fname, ""]
+              end
+            ) | @csv
+          ' >> data.csv
+
+          echo "✅ Exported all items to data.csv"
+          cat data.csv
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-project-items
+          path: data.csv
